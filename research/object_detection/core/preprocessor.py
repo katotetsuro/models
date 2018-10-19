@@ -2949,6 +2949,63 @@ def convert_class_logits_to_softmax(multiclass_scores, temperature=1.0):
 
   return multiclass_scores
 
+def random_erasing(image, boxes, probability = 0.5, occlusion_rate=0.4, probability_box=0.5, occlusion_rate_box=0.6):
+    """Random Erasing for object detection.
+       Code from https://github.com/zhunzhong07/Random-Erasing/blob/master/transforms.py
+
+    Args:
+      image: rank 3 float32 tensor contains 1 image -> [height, width, channels]
+             with pixel values varying between [0, 1].
+      boxes: rank 2 float32 tensor containing the bounding boxes -> [N, 4].
+             Boxes are in normalized form meaning their coordinates vary
+             between [0, 1].
+             Each row is in the form of [ymin, xmin, ymax, xmax].
+
+    Returns:
+      image: image which is the same rank as input image.
+      boxes: boxes which is the same rank as input boxes.
+             Boxes are in normalized form.
+    """
+    import numpy as np
+    def _image_aware_gen_mask(shape, p, r):
+      import random
+      import math
+      mask = np.zeros(shape, dtype=np.uint8)
+      if random.uniform(0, 1) > p:
+          return mask
+
+      h, w, *_ = shape
+      h_max = int(h * r)
+      h_min = int(h * 0.1)
+      w_max = int(w * r)
+      w_min = int(w * 0.1)
+
+      h_occlusion = random.randint(h_min, h_max)
+      w_occlusion = random.randint(w_min, w_max)
+      y = random.randint(0, h - h_occlusion)
+      x = random.randint(0, w - w_occlusion)
+      mask[y:y+h_occlusion, x:x+w_occlusion] = 1
+      return mask
+
+    def _gen_mask(image, boxes):
+      mask = _image_aware_gen_mask(image.shape, probability, occlusion_rate)
+      h, w, *_ = image.shape
+      boxes[:, [0,2]] *= h
+      boxes[:, [1,3]] *= w
+      boxes = boxes.astype(np.int32)
+      
+      for b in boxes:
+          shape = b[2]-b[0], b[3]-b[1], 3
+          mask[b[0]:b[2], b[1]:b[3]] = _image_aware_gen_mask(shape, probability_box, occlusion_rate_box)
+      
+      return mask
+
+    mask = tf.py_func(_gen_mask, [image, boxes], tf.uint8, stateful=False)
+    r = tf.random_uniform(tf.shape(image), maxval=255.0)
+    augmented_image = tf.where(mask>0, r, image)
+    return augmented_image
+
+
 
 def get_default_func_arg_map(include_label_scores=False,
                              include_multiclass_scores=False,
@@ -3100,6 +3157,7 @@ def get_default_func_arg_map(include_label_scores=False,
           groundtruth_keypoints,
       ),
       convert_class_logits_to_softmax: (multiclass_scores,),
+      random_erasing: (fields.InputDataFields.image, fields.InputDataFields.groundtruth_boxes)
   }
 
   return prep_func_arg_map
